@@ -1,2 +1,16 @@
-# demoshpor
-shporadlyademo
+ctrl-x
+y
+systemctl enable --now frr
+vtysh
+conf t
+router ospf
+passive-interface default
+network 10.0.0.0/26 area 0
+network 172.16.0.0/24 area 0
+exit
+interface tun1
+no ip ospf network broadcast
+no ip ospf passive
+exit
+do write memory
+exit
