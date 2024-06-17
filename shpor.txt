@@ -1,4 +1,9 @@
-
+2. Настройте внутреннюю динамическую маршрутизацию по средствам FRR. Выберите и обоснуйте выбор протокола динамической маршрутизации из расчёта, что в дальнейшем сеть будет масштабироваться.
+Настройка FRR
+nano /etc/frr/daemons
+меняем строчку
+ospfd=no на строчку
+ospfd=yes
 ctrl-x
 y
 systemctl enable --now frr
@@ -6,7 +11,8 @@ vtysh
 conf t
 router ospf
 passive-interface default
-network 10.0.0.0/26 area 0
+network 10.0.0.0/26 area 0-для hq-r
+network 10.0.2.0/26 area 0-для br-r
 network 172.16.0.0/24 area 0
 exit
 interface tun1
@@ -15,3 +21,101 @@ no ip ospf passive
 exit
 do write memory
 exit
+nmcli connection edit tun1
+set ip-tunnel.ttl 64
+save
+quit
+systemctl stop firewalld.service
+systemctl disable --now firewalld.service
+перезапуск ISP BR-HQ-r
+show ip ospf neighbor
+
+3. Настройте автоматическое распределение IP-адресов на роутере HQ-R. a. Учтите, что у сервера должен быть зарезервирован адрес.
+apt-get install dhcpd
+
+nano /etc/sysconfig/dhcpd
+DHCPDARGS=интерфейс на HQ-SRV
+ctrl-x
+y
+enter
+
+cp /etc/dhcp/dhcpd.conf{.example,}
+nano /etc/dhcp/dhcpd.conf
+
+option domain-name "HQ-R";
+option domain-name-servers 10.0.0.1;
+
+default-lease-time 6000;
+max-lease-time 72000;
+
+authoritative;
+
+subnet 10.0.0.0 netmask 255.255.255.192 {
+	range 10.0.0.1 10.0.0.62;
+	option routers 10.0.0.1;
+}
+
+host HQ-SRV {
+	hardware ethernet MAC-adress
+	fixed-address 10.0.0.2;
+}
+dhcpd -t -cf /etc/dhcp/dhcpd.conf
+systemctl enable --now dhcpd
+systemctl status dhcpd
+И перезапускаем интернет на SRV
+
+5. Измерьте пропускную способность сети между двумя узлами HQ-R-ISP по средствам утилиты iperf 3. Предоставьте описание пропускной способности канала со скриншотами.
+apt-get install iperf3
+
+на ISP:systemctl enable --now iperf3
+HQ-R:systemctl enable --now iperf3
+iperf3 -c 192.168.0.1 -f m --get-server-output
+
+6. Составьте backup скрипты для сохранения конфигурации сетевых устройств, а именно HQ-R BR-R. Продемонстрируйте их работу.
+
+mkdir /opt/backup/
+nano backup-script.sh
+
+#!/bin/bash
+
+echo "Start backup!"
+
+backup_dir="/etc"
+dest_dir="/opt/backup"
+
+mkdir -p $dest_dir
+tar -czf $dest_dir/$(hostname -s)-$(date +"%d.%m.%y").tgz $backup_dir
+
+echo "Done!"
+
+ctrl-x
+y
+жмём enter
+chmod +x backup-script.sh
+./backup-script.sh
+tar -tf /opt/backup/hq-r-21.06.24.tgz | less
+
+7. Настройте подключение по SSH для удалённого конфигурирования устройства HQ-SRV по порту 2222. Учтите, что вам необходимо перенаправить трафик на этот порт посредством контролирования трафика.
+HQ-R:
+nano /etc/openssh/sshd_config
+меняет порт как на задании
+ctrl-x
+y
+enter
+systemctl restart sshd
+nft add table inet nat
+nft add chain inet nat prerouting '{ type nat hook prerouting priority 0; }'
+nft add rule inet nat prerouting ip daddr 192.168.0.2 tcp dport 22 dnat to 10.0.0.2:2222
+nft list ruleset | tail -n 7 | tee -a /etc/nftables/nftables.nft
+systemctl enable --now nftables
+systemctl restart nftables
+nft list ruleset
+
+8. Настройте контроль доступа до HQ-SRV по SSH со всех устройств, кроме CLI.
+HQ-SRV:
+systemctl enable --now nftables.service
+nft add rule inet filter input ip saddr 10.0.1.2 tcp dport 2222 counter drop
+nano /etc/nftables/nftables.nft и удаляем всё содержимое кроме закоментированных строк
+nft list ruleset | tee -a /etc/nftables/nftables.nft
+systemctl restart nftables
+nft list ruleset
